@@ -6,6 +6,7 @@ plugins {
 android {
     namespace 'com.whispercpp'
     compileSdk 36
+    ndkVersion '27.2.12479018'
 
     defaultConfig {
         minSdk 29
@@ -16,6 +17,8 @@ android {
         }
         externalNativeBuild {
             cmake {
+                // Support both 4 KB and 16 KB page-size Android devices with NDK r27.
+                arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
                 // When set, builds whisper.android against the version located
                 // at GGML_HOME instead of the copy bundled with whisper.cpp.
                 if (

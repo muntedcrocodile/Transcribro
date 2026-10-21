@@ -6,6 +6,15 @@ It features a voice input keyboard, enabling you to type with speech.\
 It can also be used by other apps either explicitly or when set as the user-selected speech to text app which some apps
 may use for speech to text.
 
+## This fork
+
+This fork adds **Settings → Voice Input Keyboard → Keep screen awake while listening**,
+disabled by default. It uses the keyboard window's `FLAG_KEEP_SCREEN_ON` with no
+additional permissions. See [implementation, build instructions, and device checks](docs/keep-screen-awake.md).
+The debug APK uses `dev.soupslurpr.transcribro.debug` and its own debug signing
+certificate; the upstream download and certificate information below describes
+the original release.
+
 ## Language support
 
 Transcribro currently only supports English. However, supporting other languages is planned and tracked in https://github.com/soupslurpr/Transcribro/issues/18.

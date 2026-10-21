@@ -61,7 +61,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -100,16 +100,32 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
-private var speechRecognizer: MutableState<SpeechRecognizer?> = mutableStateOf(null)
-
-private var isRecognizing by mutableStateOf(false)
-
-private var showInsufficientPermissionsError by mutableStateOf(false)
-
-private var isSpeaking by mutableStateOf(false)
-
 class VoiceInput : InputMethodService() {
     private val voiceInputLifecycleOwner = VoiceInputLifecycleOwner()
+    private val speechRecognizer = mutableStateOf<SpeechRecognizer?>(null)
+    private var isRecognizing by mutableStateOf(false)
+    private var showInsufficientPermissionsError by mutableStateOf(false)
+    private var isSpeaking by mutableStateOf(false)
+    internal val screenAwakeController = ListeningScreenAwakeController { window?.window }
+
+    private fun startRecognition(autoStop: Boolean) {
+        val recognizer = speechRecognizer.value ?: return
+        screenAwakeController.startListening(autoStop) {
+            recognizer.startListening(getStartListeningIntent(autoStop))
+        }
+    }
+
+    private fun stopRecognition() {
+        screenAwakeController.onListeningStopped()
+        speechRecognizer.value?.stopListening()
+    }
+
+    private fun cancelRecognition() {
+        screenAwakeController.onListeningStopped()
+        isRecognizing = false
+        isSpeaking = false
+        speechRecognizer.value?.cancel()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -136,6 +152,12 @@ class VoiceInput : InputMethodService() {
             )
 
             val preferencesUiState by preferencesViewModel.uiState.collectAsState()
+
+            SideEffect {
+                screenAwakeController.setEnabled(
+                    preferencesUiState.keepScreenAwakeWhileListening.second.value
+                )
+            }
 
             val acceptedPrivacyPolicyAndLicense = preferencesUiState.acceptedPrivacyPolicyAndLicense.second.value
 
@@ -244,7 +266,7 @@ class VoiceInput : InputMethodService() {
                                                 ComponentName(applicationContext, MainRecognitionService::class.java)
                                             )
 
-                                            speechRecognizer.value!!.setRecognitionListener(object :
+                                            speechRecognizer.value!!.setRecognitionListener(screenAwakeController.track(object :
                                                 RecognitionListener {
                                                 override fun onReadyForSpeech(params: Bundle?) {
                                                     isRecognizing = true
@@ -271,6 +293,12 @@ class VoiceInput : InputMethodService() {
                                                 }
 
                                                 override fun onError(error: Int) {
+                                                    isSpeaking = false
+                                                    // Busy/client errors can refer to a previous request still finishing.
+                                                    if (error != SpeechRecognizer.ERROR_RECOGNIZER_BUSY &&
+                                                        error != SpeechRecognizer.ERROR_CLIENT) {
+                                                        isRecognizing = false
+                                                    }
                                                     when (error) {
                                                         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                                                             showInsufficientPermissionsError = true
@@ -291,6 +319,7 @@ class VoiceInput : InputMethodService() {
                                                 }
 
                                                 override fun onResults(results: Bundle?) {
+                                                    isSpeaking = false
                                                     isRecognizing = false
 
                                                     if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
@@ -433,14 +462,10 @@ class VoiceInput : InputMethodService() {
                                                 override fun onEvent(eventType: Int, params: Bundle?) {
 //            TODO("Not yet implemented")
                                                 }
-                                            })
+                                            }))
 
                                             if (autoStartRecognition) {
-                                                speechRecognizer.value!!.startListening(
-                                                    getStartListeningIntent(
-                                                        autoStopRecognition
-                                                    )
-                                                )
+                                                startRecognition(autoStopRecognition)
                                             }
                                         }
                                     }
@@ -474,8 +499,7 @@ class VoiceInput : InputMethodService() {
                                                 ) {
                                                     OutlinedIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
 
                                                             val intent = context.packageManager
                                                                 .getLaunchIntentForPackage(context.packageName)!!
@@ -499,8 +523,7 @@ class VoiceInput : InputMethodService() {
                                                     Spacer(modifier = Modifier.size(8.dp))
                                                     FilledTonalIconButton(
                                                         onClick = {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
                                                             switchToPreviousInputMethod()
                                                         },
                                                         modifier = Modifier
@@ -519,8 +542,7 @@ class VoiceInput : InputMethodService() {
                                                 OutlinedButton(
                                                     onClick = {
                                                         if (isRecognizing) {
-                                                            speechRecognizer.value?.cancel()
-                                                            isRecognizing = false
+                                                            cancelRecognition()
                                                         }
                                                     },
                                                     modifier = Modifier
@@ -539,13 +561,9 @@ class VoiceInput : InputMethodService() {
                                                 checked = isRecognizing,
                                                 onCheckedChange = {
                                                     if (isRecognizing) {
-                                                        speechRecognizer.value?.stopListening()
+                                                        stopRecognition()
                                                     } else {
-                                                        speechRecognizer.value?.startListening(
-                                                            getStartListeningIntent(
-                                                                autoStopRecognition
-                                                            )
-                                                        )
+                                                        startRecognition(autoStopRecognition)
                                                     }
                                                 },
                                                 modifier = Modifier
@@ -924,25 +942,42 @@ class VoiceInput : InputMethodService() {
     }
 
     override fun onStartInputView(editorInfo: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(editorInfo, restarting)
+        screenAwakeController.onStartInputView()
         voiceInputLifecycleOwner.onResume()
     }
 
+    override fun onWindowShown() {
+        super.onWindowShown()
+        screenAwakeController.onWindowShown()
+    }
+
+    override fun onWindowHidden() {
+        screenAwakeController.onWindowHidden()
+        cancelRecognition()
+        super.onWindowHidden()
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) {
+        screenAwakeController.onFinishInputView()
+        cancelRecognition()
         voiceInputLifecycleOwner.onPause()
+        super.onFinishInputView(finishingInput)
     }
 
     override fun onFinishInput() {
-        speechRecognizer.value?.cancel()
-        isRecognizing = false
+        screenAwakeController.onFinishInputView()
+        cancelRecognition()
+        super.onFinishInput()
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        voiceInputLifecycleOwner.onDestroy()
-
-        speechRecognizer.value?.cancel()
+        screenAwakeController.onDestroy()
+        cancelRecognition()
         speechRecognizer.value?.destroy()
         speechRecognizer.value = null
+        voiceInputLifecycleOwner.onDestroy()
+        super.onDestroy()
     }
 
     private fun getStartListeningIntent(longForm: Boolean): Intent {
