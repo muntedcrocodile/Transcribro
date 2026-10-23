@@ -40,6 +40,10 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // Robolectric 4.17's Android 16+ shared-memory setup on JDK 21.
+            it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
+        }
     }
     packaging {
         resources {
@@ -61,7 +65,7 @@ android {
         }
         getByName("debug") {
             applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            versionNameSuffix = "-debug-keyboard-fix1"
             signingConfig = signingConfigs.getByName("debug")
         }
         create("staging") {
@@ -82,7 +86,7 @@ android {
 dependencies {
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.16")
+    testImplementation("org.robolectric:robolectric:4.17")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 
     implementation(project(":lib"))

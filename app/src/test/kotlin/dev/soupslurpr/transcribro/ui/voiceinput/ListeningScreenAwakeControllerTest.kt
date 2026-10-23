@@ -15,7 +15,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [29, 36])
+@Config(sdk = [29, 36, 37])
 class ListeningScreenAwakeControllerTest {
     private lateinit var dialog: Dialog
     private lateinit var controller: ListeningScreenAwakeController

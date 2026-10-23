@@ -976,8 +976,13 @@ class VoiceInput : InputMethodService() {
         cancelRecognition()
         speechRecognizer.value?.destroy()
         speechRecognizer.value = null
-        voiceInputLifecycleOwner.onDestroy()
-        super.onDestroy()
+        try {
+            // Android may call onFinishInputView/onFinishInput from here. Keep the
+            // lifecycle alive until those callbacks have finished pausing the view.
+            super.onDestroy()
+        } finally {
+            voiceInputLifecycleOwner.onDestroy()
+        }
     }
 
     private fun getStartListeningIntent(longForm: Boolean): Intent {
@@ -1006,11 +1011,14 @@ class VoiceInputLifecycleOwner : LifecycleOwner, ViewModelStoreOwner, SavedState
     }
 
     fun onResume() {
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) return
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
 
     fun onPause() {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        if (lifecycleRegistry.currentState == Lifecycle.State.RESUMED) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        }
     }
 
     fun onDestroy() {

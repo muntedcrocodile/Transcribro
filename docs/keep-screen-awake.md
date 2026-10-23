@@ -45,7 +45,7 @@ upstream release. Open the debug app to accept the license/privacy policy, grant
 microphone permission, enable its keyboard, and enable the new setting. Debug
 preferences are separate from the upstream app's preferences.
 
-Tests exercise actual window flags on Android API 29 and 36 using Robolectric,
+Tests exercise actual window flags on Android API 29, 36, and 37 using Robolectric,
 recognition callbacks in both listening modes, errors including microphone denial
 and recognizer-busy, start exceptions, preference changes/persistence, all IME
 cleanup callbacks, destruction, and late callbacks after dismissal.
@@ -54,7 +54,7 @@ Robolectric does not verify a physical device's power policy or microphone pipel
 ## Validation of this change
 
 - Debug assembly, unit tests, and Android lint passed with JDK 21 and API 36 tooling.
-- 31 tests passed with no failures or skips (API 29 and API 36 window/lifecycle
+- 55 tests passed with no failures or skips (API 29, 36, and 37 window/lifecycle
   tests, plus the DataStore persistence test).
 - `apksigner verify` passed for the debug APK.
 - `zipalign -c -P 16 4` passed, and all bundled arm64-v8a and x86_64 native
@@ -62,6 +62,24 @@ Robolectric does not verify a physical device's power policy or microphone pipel
 - The manifest retains microphone permission and the existing AndroidX-generated
   signature permission; no screen, power, accessibility, or root permission is added.
 - Physical Pixel 10/GrapheneOS testing has not been performed in this workspace.
+
+## Keyboard-switch crash correction
+
+The `7-debug-keyboard-fix1` build corrects a crash when switching back to the
+regular keyboard and Android stops the Transcribro IME service. Android's
+`InputMethodService.onDestroy()` can call `onFinishInputView()` as part of its own
+cleanup. The previous build destroyed the custom lifecycle owner first, so that
+callback attempted to pause a destroyed owner and raised `IllegalStateException`.
+
+The owner now remains alive until the superclass teardown completes, and is
+destroyed in `finally`. Late pause/resume callbacks cannot revive it. The screen-on
+flag and speech recognizer are still cleaned up before Android's teardown begins.
+The regression test marks the framework's input/view state as active, exercises
+its real teardown path, and verifies the view is finished before lifecycle
+destruction. The original implementation reproduced the reported exception.
+
+Install this APK over the earlier debug build to retain its settings. Test switching
+back to the normal keyboard both while listening and after stopping dictation.
 
 ## Pixel 10 / GrapheneOS device checks
 
