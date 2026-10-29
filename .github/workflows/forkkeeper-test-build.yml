@@ -1,0 +1,195 @@
+# Internal debug APKs only. Parent must provision/review the debug environment.
+name: ForkKeeper debug test artifacts
+
+on:
+  push:
+    branches: ["forkkeeper/setup/**", "forkkeeper/candidates/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    if: github.repository == 'muntedcrocodile/Transcribro'
+    name: debug-${{ matrix.role }}
+    runs-on: ubuntu-24.04
+    environment: forkkeeper-debug-build
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [baseline, candidate]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Select exact source and reserved debug version
+        id: source
+        env:
+          ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          baseline = json.loads(Path('forkkeeper/test-baseline.json').read_text())
+          assert baseline['schema'] == 1
+          assert baseline['repository'] == os.environ['GITHUB_REPOSITORY'] == 'muntedcrocodile/Transcribro'
+          assert baseline['variant'] == 'debug'
+          assert baseline['package'] == 'dev.soupslurpr.transcribro.debug'
+          assert baseline['certificate_sha256'] == '54a0974a5fa86212c67416b844943c7184d143df0527f98c72190138b770fcb9'
+          assert baseline['status'] == 'enrollment-seed-requires-independent-acceptance'
+          assert re.fullmatch('[0-9a-f]{40}', baseline['source_sha'])
+          assert re.fullmatch('[0-9a-f]{40}', baseline['source_tree'])
+          assert type(baseline['version_code']) is int and 100003 <= baseline['version_code'] < 2100000000
+          candidate_text = Path('forkkeeper/test-version-code.txt').read_text().strip()
+          assert re.fullmatch('[1-9][0-9]{0,9}', candidate_text)
+          candidate_version = int(candidate_text)
+          assert baseline['version_code'] < candidate_version <= 2100000000
+          assert os.environ['ROLE'] in ('baseline', 'candidate')
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['GITHUB_SHA']
+          source = baseline['source_sha'] if os.environ['ROLE'] == 'baseline' else os.environ['GITHUB_SHA']
+          version = baseline['version_code'] if os.environ['ROLE'] == 'baseline' else candidate_version
+          assert re.fullmatch('[0-9a-f]{40}', source)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'sha={source}', file=output)
+              print(f'version={version}', file=output)
+          PY
+      # Control/helper/override always come from github.sha. Historical app source
+      # remains a separate unchanged checkout, not a historical prebuilt APK.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        if: matrix.role == 'baseline'
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: baseline-source
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.13+9'
+          architecture: x64
+          check-latest: false
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '12266719'
+          packages: 'build-tools;36.0.0'
+          log-accepted-android-sdk-licenses: false
+      - name: Install explicit Android toolchain
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Build and inspect exact debug APK with dedicated test key
+        env:
+          ROLE: ${{ matrix.role }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION_CODE: ${{ steps.source.outputs.version }}
+          FORKKEEPER_DEBUG_KEYSTORE_BASE64: ${{ secrets.FORKKEEPER_DEBUG_KEYSTORE_BASE64 }}
+          FORKKEEPER_DEBUG_STORE_PASSWORD: ${{ secrets.FORKKEEPER_DEBUG_STORE_PASSWORD }}
+          FORKKEEPER_DEBUG_KEY_PASSWORD: ${{ secrets.FORKKEEPER_DEBUG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          : "${FORKKEEPER_DEBUG_KEYSTORE_BASE64:?Dedicated debug keystore secret required}"
+          : "${FORKKEEPER_DEBUG_STORE_PASSWORD:?Dedicated debug store password secret required}"
+          : "${FORKKEEPER_DEBUG_KEY_PASSWORD:?Dedicated debug key password secret required}"
+          keydir=$(mktemp -d "$RUNNER_TEMP/forkkeeper-debug-key.XXXXXX")
+          trap 'rm -rf -- "$keydir"' EXIT
+          export FORKKEEPER_DEBUG_KEYSTORE_PATH="$keydir/test-signing.p12"
+          printf '%s' "$FORKKEEPER_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$FORKKEEPER_DEBUG_KEYSTORE_PATH"
+          unset FORKKEEPER_DEBUG_KEYSTORE_BASE64
+          source_root=$GITHUB_WORKSPACE
+          if [[ $ROLE == baseline ]]; then source_root="$GITHUB_WORKSPACE/baseline-source"; fi
+          bash scripts/forkkeeper-debug-build "$source_root" "$VERSION_CODE" "$SOURCE_SHA"
+          unset FORKKEEPER_DEBUG_STORE_PASSWORD FORKKEEPER_DEBUG_KEY_PASSWORD
+          mkdir -p "$RUNNER_TEMP/forkkeeper-apk" "$RUNNER_TEMP/forkkeeper-provenance"
+          cp -- "$source_root/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/forkkeeper-apk/app-debug.apk"
+          cmp -- "$source_root/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/forkkeeper-apk/app-debug.apk"
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          def sha(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          control = Path(os.environ['GITHUB_WORKSPACE'])
+          source = control / 'baseline-source' if os.environ['ROLE'] == 'baseline' else control
+          def git(*args: str) -> str:
+              return subprocess.check_output(['git', '-C', str(source), *args], text=True).strip()
+          baseline = json.loads((control / 'forkkeeper/test-baseline.json').read_text())
+          assert git('rev-parse', 'HEAD') == os.environ['SOURCE_SHA']
+          if os.environ['ROLE'] == 'baseline':
+              assert git('rev-parse', 'HEAD^{tree}') == baseline['source_tree']
+          apk_hash = sha(temporary / 'forkkeeper-apk/app-debug.apk')
+          assert apk_hash == sha(source / 'app/build/outputs/apk/debug/app-debug.apk')
+          def properties(path: Path) -> dict[str, str]:
+              return dict(line.split('=', 1) for line in path.read_text().splitlines()
+                          if '=' in line and not line.lstrip().startswith('#'))
+          sdk = Path(os.environ['ANDROID_HOME'])
+          java = subprocess.run(['java', '-version'], check=True, capture_output=True, text=True)
+          gradle = subprocess.check_output([str(source / 'gradlew'), '--version', '--no-daemon', '--console=plain'], cwd=source, text=True)
+          assert re.search(r'\b21\.0\.13\+9\b', java.stderr + java.stdout)
+          assert re.search(r'^Gradle 8\.14\.3$', gradle, re.M)
+          observed = {
+              'java_version_output': (java.stdout + java.stderr).strip(),
+              'gradle_version_output': gradle.strip(),
+              'android_packages': {name: properties(sdk / name / 'source.properties')
+                                   for name in ('platforms/android-36', 'build-tools/36.0.0',
+                                                'ndk/27.2.12479018', 'cmake/3.22.1')},
+              'cmdline_tools': {str(path.relative_to(sdk)): properties(path)
+                                for path in sorted((sdk / 'cmdline-tools').glob('*/source.properties'))},
+              'cmake_version_output': subprocess.check_output([str(sdk / 'cmake/3.22.1/bin/cmake'), '--version'], text=True).strip(),
+          }
+          record = {
+              'schema': 1, 'purpose': 'debug-build-provenance',
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'role': os.environ['ROLE'], 'source_sha': git('rev-parse', 'HEAD'),
+              'source_tree': git('rev-parse', 'HEAD^{tree}'),
+              'control_source_sha': os.environ['GITHUB_SHA'],
+              'control_source_tree': subprocess.check_output(['git', '-C', str(control), 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'version_code': int(os.environ['VERSION_CODE']),
+              'package': baseline['package'], 'variant': 'debug', 'debuggable': True,
+              'certificate_sha256': baseline['certificate_sha256'],
+              'workflow_run_id': int(os.environ['GITHUB_RUN_ID']),
+              'workflow_run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'event': os.environ['GITHUB_EVENT_NAME'],
+              'workflow_path': '.github/workflows/forkkeeper-test-build.yml',
+              'workflow_sha256': sha(control / '.github/workflows/forkkeeper-test-build.yml'),
+              'build_override_path': 'forkkeeper/debug-signing.init.gradle',
+              'build_override_sha256': sha(control / 'forkkeeper/debug-signing.init.gradle'),
+              'build_helper_sha256': sha(control / 'scripts/forkkeeper-debug-build'),
+              'wrapper_properties_sha256': sha(source / 'gradle/wrapper/gradle-wrapper.properties'),
+              'wrapper_jar_sha256': sha(source / 'gradle/wrapper/gradle-wrapper.jar'),
+              'artifact_sha256': apk_hash, 'unsigned_sha256': apk_hash,
+              'submodules': git('submodule', 'status', '--recursive'),
+              'toolchain_requested': {'jdk': 'temurin-21.0.13+9-x64', 'gradle': '8.14.3',
+                            'agp': '8.12.0', 'kotlin': '2.2.0', 'sdk': 36,
+                            'build_tools': '36.0.0', 'ndk': '27.2.12479018',
+                            'cmake': '3.22.1', 'cmdline_tools': '12266719'},
+              'toolchain_observed': observed,
+              'runner_image_os': os.environ.get('ImageOS'),
+              'runner_image_version': os.environ.get('ImageVersion'),
+              'accepted_baseline': False, 'historical_apk': False,
+          }
+          (temporary / 'forkkeeper-provenance/build.json').write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+          PY
+      - name: Remove debug key remnants
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -rf -- "$RUNNER_TEMP"/forkkeeper-debug-key.*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.role }}-debug-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forkkeeper-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: debug-provenance-${{ matrix.role }}-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/forkkeeper-provenance/build.json
+          if-no-files-found: error
+          retention-days: 7

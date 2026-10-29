@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "repository": "muntedcrocodile/Transcribro",
+  "source_sha": "f28672a9d635393e271ba91991272fc1348be2df",
+  "version_code": 100003,
+  "variant": "debug",
+  "package": "dev.soupslurpr.transcribro.debug",
+  "status": "enrollment-seed-requires-independent-acceptance",
+  "certificate_sha256": "54a0974a5fa86212c67416b844943c7184d143df0527f98c72190138b770fcb9",
+  "source_tree": "5c57b049ba52358eea06f1d517b798db3e411779"
+}
