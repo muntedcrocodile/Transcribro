@@ -15,6 +15,53 @@ The debug APK uses `dev.soupslurpr.transcribro.debug` and its own debug signing
 certificate; the upstream download and certificate information below describes
 the original release.
 
+## Automatic fork builds and Obtainium
+
+Every push/merge to `main` publishes a signed, optimized APK to
+[this fork's releases](https://github.com/muntedcrocodile/Transcribro/releases).
+The workflow can also be started manually from **Actions → Fork release** on `main`.
+It runs unit tests and release lint before publishing. Release builds use R8
+code/resource shrinking and the existing native release optimizations, with one
+APK for arm64-v8a and x86_64 devices running Android 10 or newer.
+Standard GitHub-hosted Actions runners are free for this public repository.
+
+In Obtainium:
+
+1. Choose **Add App** and enter `https://github.com/muntedcrocodile/Transcribro`.
+2. Keep the default GitHub release settings (these are normal releases, not prereleases).
+3. Install the APK and allow Obtainium to install apps if Android prompts.
+4. Enable Obtainium's background update checks and automatic updates as desired.
+   Android may still require confirmation to install an update.
+
+The automated APK uses `dev.soupslurpr.transcribro.fork`, separate from both the
+upstream app and the earlier debug APK. On first install, open it, accept the
+license/privacy policy, grant microphone access, enable its keyboard, and configure
+its settings/models. Existing debug settings/models do not migrate automatically.
+All later fork releases use the same signing key and update this installation in place.
+
+Release tags, version names, and Android version codes all match
+`100000 + github.run_number`; no manual version bump is needed. Keep the
+`release.yml` workflow's run history/identity when changing the workflow, or raise
+the base offset so new version codes remain greater than installed versions.
+Re-running a workflow keeps its version and replaces the same release assets.
+
+Signing credentials are stored in this fork's GitHub Actions secrets:
+`RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and
+`RELEASE_KEY_PASSWORD`. A protected local backup is kept outside the repository at
+`~/.local/share/transcribro-signing/`; back it up securely and keep it private.
+Do not regenerate the key for later releases: Android requires a consistent
+signing certificate to update an installed app. Each release includes `SHA256SUMS`,
+and its Actions log prints the APK signing certificate fingerprint.
+
+Local equivalent (unsigned APK, for verification):
+
+```sh
+./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease -PforkReleaseVersionCode=100001
+```
+
+Omitting the property preserves the upstream release package/version and existing
+debug/staging build configuration.
+
 ## Language support
 
 Transcribro currently only supports English. However, supporting other languages is planned and tracked in https://github.com/soupslurpr/Transcribro/issues/18.

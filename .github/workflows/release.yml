@@ -1,0 +1,84 @@
+name: Fork release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'muntedcrocodile/Transcribro' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android toolchain
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Set increasing version
+        run: echo "VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+      - name: Test and build optimized APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease -PforkReleaseVersionCode="$VERSION_CODE"
+      - name: Sign and verify APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Release signing secrets must be configured}"
+          keyfile="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$keyfile"' EXIT
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keyfile"
+          mkdir -p dist
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$tools/zipalign" -P 16 -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$keyfile" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --out "dist/Transcribro-fork-${VERSION_CODE}.apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --verbose --print-certs "dist/Transcribro-fork-${VERSION_CODE}.apk"
+          "$tools/zipalign" -c -P 16 4 "dist/Transcribro-fork-${VERSION_CODE}.apk"
+          cd dist
+          sha256sum *.apk > SHA256SUMS
+      - name: Publish Obtainium release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$VERSION_CODE"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Optimized fork build from commit ${GITHUB_SHA} on main.
+
+          Package: dev.soupslurpr.transcribro.fork
+          Version: ${VERSION_CODE}
+          Supports arm64-v8a and x86_64 (Android 10+).
+
+          Add https://github.com/${GITHUB_REPOSITORY} to Obtainium to receive updates.
+          First installation is separate from upstream and debug builds; future releases update in place.
+          EOF
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.apk dist/SHA256SUMS --clobber
+          else
+            gh release create "$tag" dist/*.apk dist/SHA256SUMS --target "$GITHUB_SHA" --title "$VERSION_CODE" --notes-file "$RUNNER_TEMP/notes.md" --latest
+          fi

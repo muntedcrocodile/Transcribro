@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.2.0"
 }
 
+// CI supplies an increasing version for the separately installed fork release.
+val forkReleaseVersionCode = providers.gradleProperty("forkReleaseVersionCode").orNull?.toInt()
+if (forkReleaseVersionCode != null) {
+    require(forkReleaseVersionCode in 8..2_100_000_000)
+}
+
 android {
     namespace = "dev.soupslurpr.transcribro"
     compileSdk = 36
@@ -14,7 +20,7 @@ android {
         applicationId = "dev.soupslurpr.transcribro"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
+        versionCode = forkReleaseVersionCode ?: 7
         versionName = versionCode.toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -56,6 +62,9 @@ android {
     }
     buildTypes {
         release {
+            if (forkReleaseVersionCode != null) {
+                applicationIdSuffix = ".fork"
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
