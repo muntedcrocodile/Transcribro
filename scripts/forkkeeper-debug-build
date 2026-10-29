@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Run inside the debug build environment; never use production or receipt keys.
+set -euo pipefail
+set +x
+
+fail() { echo "$1" >&2; exit 2; }
+if [[ $# != 3 || ! $2 =~ ^[1-9][0-9]{0,9}$ || ! $3 =~ ^[0-9a-f]{40}$ ]]; then
+    fail 'usage: forkkeeper-debug-build SOURCE_DIRECTORY ALLOCATED_DEBUG_VERSION EXACT_SOURCE_SHA'
+fi
+version_code=$2
+source_sha=$3
+if (( version_code < 100003 || version_code > 2100000000 )); then
+    fail 'debug version must be reserved, at least 100003, and within Android bounds'
+fi
+: "${FORKKEEPER_DEBUG_KEYSTORE_PATH:?Dedicated debug keystore path required}"
+: "${FORKKEEPER_DEBUG_STORE_PASSWORD:?Dedicated debug store password required}"
+: "${FORKKEEPER_DEBUG_KEY_PASSWORD:?Dedicated debug key password required}"
+: "${ANDROID_HOME:?Pinned Android SDK required}"
+[[ $FORKKEEPER_DEBUG_KEYSTORE_PATH == /* && -f $FORKKEEPER_DEBUG_KEYSTORE_PATH && ! -L $FORKKEEPER_DEBUG_KEYSTORE_PATH ]] || fail 'debug keystore must be an absolute regular nonsymlink file'
+control_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+source_root=$(cd -- "$1" && pwd -P)
+cd -- "$source_root"
+[[ $(git rev-parse HEAD) == "$source_sha" ]] || fail 'source SHA differs from requested exact checkout'
+git diff --quiet HEAD -- || fail 'tracked source must be clean before build'
+submodules=$(git submodule status --recursive)
+if [[ $submodules == *$'\n-'* || $submodules == -* || $submodules == *$'\n+'* || $submodules == +* || $submodules == *$'\nU'* || $submodules == U* ]]; then
+    fail 'submodules must be initialized at exact recorded commits'
+fi
+# Never accept stale outputs or an existing user-generated debug signing report.
+[[ ! -e app/build/outputs/apk/debug ]] || fail 'use a fresh checkout without existing debug APK outputs'
+export FORKKEEPER_DEBUG_VERSION_CODE=$version_code
+./gradlew --no-daemon --no-configuration-cache --no-build-cache \
+    --init-script "$control_root/forkkeeper/debug-signing.init.gradle" \
+    :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+apk=app/build/outputs/apk/debug/app-debug.apk
+[[ -f $apk && ! -L $apk ]] || fail 'expected installable app-debug.apk'
+shopt -s nullglob globstar dotglob
+apks=(app/build/outputs/apk/debug/**/*.apk)
+[[ ${#apks[@]} == 1 && ${apks[0]} == "$apk" ]] || fail 'expected sole debug APK'
+tools="$ANDROID_HOME/build-tools/36.0.0"
+badging=$("$tools/aapt2" dump badging "$apk")
+package_header=${badging%%$'\n'*}
+[[ $package_header =~ ^package:\ name=\'([A-Za-z0-9_.]+)\'\ versionCode=\'([0-9]+)\'([[:space:]]|$) ]] || fail 'debug package/version header mismatch'
+[[ ${BASH_REMATCH[1]} == dev.soupslurpr.transcribro.debug && ${BASH_REMATCH[2]} == "$version_code" ]] || fail 'debug package/version mismatch'
+[[ $badging =~ (^|$'\n')application-debuggable($|$'\n') ]] || fail 'APK must be debuggable'
+certs=$("$tools/apksigner" verify --verbose --print-certs "$apk")
+mapfile -t digests < <(printf '%s\n' "$certs" | sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]+)$/\1/p')
+[[ ${#digests[@]} == 1 && ${digests[0],,} == 54a0974a5fa86212c67416b844943c7184d143df0527f98c72190138b770fcb9 ]] || fail 'persistent debug certificate mismatch'
+git diff --quiet HEAD -- || fail 'build changed tracked source'
+# Inspection only. No postbuild signing, alignment, compression or APK rewriting.

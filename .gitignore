@@ -15,3 +15,13 @@
 .cxx
 local.properties
 /app/release
+
+# ForkKeeper private outputs and signing material must never enter this checkout.
+*.apk
+*.jks
+*.keystore
+/dist/
+*.p12
+*.pfx
+/.venv/
+__pycache__/

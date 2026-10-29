@@ -1,0 +1,49 @@
+// Reviewed build-time override, identical for historical baseline and candidate.
+// This file is hashed separately from app source; it never modifies an APK.
+def requiredEnv = { name ->
+    def value = System.getenv(name)
+    if (value == null || value.isEmpty()) {
+        throw new GradleException('Missing dedicated debug build input: ' + name)
+    }
+    value
+}
+def keyFile = new File(requiredEnv('FORKKEEPER_DEBUG_KEYSTORE_PATH'))
+if (!keyFile.isAbsolute() || !keyFile.isFile()) {
+    throw new GradleException('Dedicated debug keystore must be an absolute regular file')
+}
+def versionText = requiredEnv('FORKKEEPER_DEBUG_VERSION_CODE')
+if (!(versionText ==~ /[1-9][0-9]{0,9}/) ||
+        versionText.toLong() < 100003 || versionText.toLong() > 2100000000) {
+    throw new GradleException('Invalid allocated debug version')
+}
+if (gradle.startParameter.taskNames != [':app:testDebugUnitTest', ':app:lintDebug', ':app:assembleDebug']) {
+    throw new GradleException('This override accepts only the reviewed debug task sequence')
+}
+allprojects { project ->
+    project.plugins.withId('com.android.application') {
+        project.extensions.getByName('androidComponents').finalizeDsl { android ->
+            if (project.path != ':app' || android.defaultConfig.applicationId != 'dev.soupslurpr.transcribro') {
+                throw new GradleException('Unexpected debug application source identity')
+            }
+            def signing = android.signingConfigs.maybeCreate('forkkeeperDebug')
+            signing.storeFile = keyFile
+            signing.storeType = 'PKCS12'
+            signing.storePassword = requiredEnv('FORKKEEPER_DEBUG_STORE_PASSWORD')
+            signing.keyAlias = 'forkkeeper-test'
+            signing.keyPassword = requiredEnv('FORKKEEPER_DEBUG_KEY_PASSWORD')
+            android.defaultConfig.versionCode = versionText.toInteger()
+            android.defaultConfig.versionName = versionText
+            def debug = android.buildTypes.getByName('debug')
+            debug.applicationIdSuffix = '.debug'
+            debug.debuggable = true
+            debug.minifyEnabled = false
+            debug.shrinkResources = false
+            debug.signingConfig = signing
+        }
+    }
+    project.plugins.withId('com.android.library') {
+        project.extensions.getByName('androidComponents').finalizeDsl { android ->
+            android.externalNativeBuild.cmake.version = '3.22.1'
+        }
+    }
+}
