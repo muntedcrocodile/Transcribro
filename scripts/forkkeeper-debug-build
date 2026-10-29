@@ -34,7 +34,8 @@ export FORKKEEPER_DEBUG_VERSION_CODE=$version_code
     :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 apk=app/build/outputs/apk/debug/app-debug.apk
 [[ -f $apk && ! -L $apk ]] || fail 'expected installable app-debug.apk'
-mapfile -t apks < <(rg --files --hidden --no-ignore app/build/outputs/apk/debug | rg '\.apk$')
+shopt -s nullglob globstar dotglob
+apks=(app/build/outputs/apk/debug/**/*.apk)
 [[ ${#apks[@]} == 1 && ${apks[0]} == "$apk" ]] || fail 'expected sole debug APK'
 tools="$ANDROID_HOME/build-tools/36.0.0"
 badging=$("$tools/aapt2" dump badging "$apk")
